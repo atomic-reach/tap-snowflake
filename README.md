@@ -47,13 +47,35 @@ environment variable is set either in the terminal context or in the `.env` file
 
 ### Source Authentication and Authorization
 
-This tap supports two authentication methods:
+This tap supports four authentication methods:
 - Standard `username` and `password` auth
 - [Key Pair Authentication](https://docs.snowflake.com/en/user-guide/key-pair-auth)
+- [OAuth 2.0](https://docs.snowflake.com/en/user-guide/oauth-intro) (Snowflake-internal OAuth or External OAuth via Okta, Azure AD, etc.)
+- SSO via external browser (interactive only)
+
+Exactly one method must be configured; the tap fails fast at startup if the configuration is ambiguous.
 
 #### Key Pair Authentication
 
 Key Pair authentication can be enabled by specifing either the `private_key` of the `private_key_path`, and optionally the `private_key_passphrase` if required.
+
+#### OAuth 2.0
+
+OAuth accepts either a pre-minted access token (caller-managed) or a refresh token (tap-managed).
+
+**Pre-minted access token** — use when an orchestrator (Meltano Cloud, Airflow) rotates tokens for you:
+- `access_token` — required
+
+**Refresh-token flow** — tap mints fresh access tokens via RFC 6749 §6:
+- `refresh_token` — required
+- `client_id` — required
+- `client_secret` — required
+- `oauth_token_endpoint` — optional; defaults to `https://{account}.snowflakecomputing.com/oauth/token-request` for Snowflake-internal OAuth. Set explicitly for External OAuth.
+- `oauth_scope` — optional
+
+The minted access token is cached in-process and re-minted automatically before expiry. `user` is optional when using OAuth — identity is carried in the token.
+
+Obtaining the refresh token (via an authorization-code exchange) is out of scope for this tap — see Snowflake's [OAuth setup docs](https://docs.snowflake.com/en/user-guide/oauth-custom) or your IdP's documentation.
 
 ### Enabling Batch Messaging
 

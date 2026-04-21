@@ -37,6 +37,8 @@ lint = [
 ]
 testing = [
     "singer-sdk[testing]",
+    "pytest-mock",
+    "responses",
 ]
 
 [tool.hatch.version]
@@ -70,6 +72,18 @@ ignore = [
     "EM101",
 ]
 select = ["ALL"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = [
+    "ARG001",
+    "ARG005",
+    "PLR0913",
+    "PLR2004",
+    "S101",
+    "S105",
+    "S106",
+    "S107",
+]
 
 [tool.ruff.format]
 quote-style = "double"

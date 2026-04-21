@@ -27,6 +27,11 @@ from singer_sdk.streams.core import REPLICATION_FULL_TABLE, REPLICATION_INCREMEN
 from snowflake.sqlalchemy import URL
 from sqlalchemy.sql import text
 
+from tap_snowflake.oauth import (
+    SnowflakeOAuthRefreshAuthenticator,
+    default_snowflake_token_endpoint,
+)
+
 if TYPE_CHECKING:
     from collections.abc import Iterable, Sequence
 
@@ -44,6 +49,7 @@ class SnowflakeAuthMethod(Enum):
     BROWSER = 1
     PASSWORD = 2
     KEY_PAIR = 3
+    OAUTH = 4
 
 
 class ProfileStats(Enum):
@@ -116,9 +122,49 @@ class SnowflakeConnector(SQLConnector):
             encryption_algorithm=serialization.NoEncryption(),
         )
 
+    def _validate_oauth_config(self) -> None:
+        """Validate OAuth-specific config when OAuth auth is selected.
+
+        Raises:
+            ConfigValidationError: If both ``access_token`` and
+                ``refresh_token`` are set, or if ``refresh_token`` is
+                set without ``client_id`` and ``client_secret``.
+        """
+        has_access_token = "access_token" in self.config
+        has_refresh_token = "refresh_token" in self.config
+        if has_access_token and has_refresh_token:
+            msg = (
+                "`access_token` and `refresh_token` are mutually exclusive. "
+                "Provide exactly one to use OAuth authentication."
+            )
+            raise ConfigValidationError(msg)
+        if has_refresh_token:
+            missing = [
+                name
+                for name in ("client_id", "client_secret")
+                if name not in self.config
+            ]
+            if missing:
+                missing_str = ", ".join(f"`{name}`" for name in missing)
+                msg = (
+                    f"OAuth refresh-token flow requires {missing_str}. "
+                    "Add the missing field(s) to the tap config."
+                )
+                raise ConfigValidationError(msg)
+
     @cached_property
     def auth_method(self) -> SnowflakeAuthMethod:
         """Validate & return the authentication method based on config."""
+        if self.config.get("access_token") or self.config.get("refresh_token"):
+            self._validate_oauth_config()
+            return SnowflakeAuthMethod.OAUTH
+
+        if "user" not in self.config:
+            msg = (
+                "`user` is required for password, key-pair, and browser authentication."
+            )
+            raise ConfigValidationError(msg)
+
         if self.config.get("use_browser_authentication"):
             return SnowflakeAuthMethod.BROWSER
 
@@ -137,10 +183,10 @@ class SnowflakeConnector(SQLConnector):
 
     def get_sqlalchemy_url(self, config: dict) -> str:
         """Concatenate a SQLAlchemy URL for use in connecting to the source."""
-        params = {
-            "account": config["account"],
-            "user": config["user"],
-        }
+        params: dict[str, Any] = {"account": config["account"]}
+
+        if "user" in config:
+            params["user"] = config["user"]
 
         if self.auth_method == SnowflakeAuthMethod.BROWSER:
             params["authenticator"] = "externalbrowser"
@@ -167,6 +213,38 @@ class SnowflakeConnector(SQLConnector):
         finally:
             sys.stdout = old_stdout
 
+    def _get_oauth_access_token(self) -> str:
+        """Return a Snowflake OAuth access token.
+
+        If ``access_token`` is set directly in config, it is returned
+        verbatim (caller-managed; no refresh attempted). Otherwise a
+        :class:`SnowflakeOAuthRefreshAuthenticator` is lazy-constructed
+        on the instance and its :meth:`mint` method is called. The
+        authenticator handles expiry-aware memoization internally via
+        ``is_token_valid``.
+
+        Returns:
+            A Snowflake OAuth access token string.
+        """
+        static_token = self.config.get("access_token")
+        if static_token:
+            return static_token
+
+        authenticator = getattr(self, "_oauth_authenticator", None)
+        if authenticator is None:
+            endpoint = self.config.get(
+                "oauth_token_endpoint",
+            ) or default_snowflake_token_endpoint(self.config["account"])
+            authenticator = SnowflakeOAuthRefreshAuthenticator(
+                auth_endpoint=endpoint,
+                client_id=self.config["client_id"],
+                client_secret=self.config["client_secret"],
+                refresh_token=self.config["refresh_token"],
+                oauth_scopes=self.config.get("oauth_scope"),
+            )
+            self._oauth_authenticator = authenticator
+        return authenticator.mint()
+
     def create_engine(self) -> sqlalchemy.engine.Engine:
         """Create SQLAlchemy engine instance.
 
@@ -179,6 +257,9 @@ class SnowflakeConnector(SQLConnector):
         }
         if self.auth_method == SnowflakeAuthMethod.KEY_PAIR:
             connect_args["private_key"] = self.get_private_key()
+        elif self.auth_method == SnowflakeAuthMethod.OAUTH:
+            connect_args["authenticator"] = "oauth"
+            connect_args["token"] = self._get_oauth_access_token()
 
         engine = sqlalchemy.create_engine(
             self.sqlalchemy_url,
