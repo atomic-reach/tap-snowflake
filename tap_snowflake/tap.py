@@ -19,8 +19,11 @@ class TapSnowflake(SQLTap):
         th.Property(
             "user",
             th.StringType,
-            required=True,
-            description="The login name for your Snowflake user.",
+            required=False,
+            description=(
+                "The login name for your Snowflake user. Required for password, "
+                "key-pair, and browser authentication; optional for OAuth. "
+            ),
         ),
         th.Property(
             "password",
@@ -28,8 +31,9 @@ class TapSnowflake(SQLTap):
             required=False,
             secret=True,
             description=(
-                "The password for your Snowflake user. One of "
-                "[`password`, `private_key`, `private_key_path`] is required."
+                "The password for your Snowflake user. One of [`password`, "
+                "`private_key`, `private_key_path`, `access_token`, "
+                "`refresh_token`] is required."
             ),
         ),
         th.Property(
@@ -39,7 +43,8 @@ class TapSnowflake(SQLTap):
             secret=True,
             description=(
                 "The private key is used to connect to snowflake. One of "
-                "[`password`, `private_key`, `private_key_path`] is required."
+                "[`password`, `private_key`, `private_key_path`, `access_token`, "
+                "`refresh_token`] is required."
             ),
         ),
         th.Property(
@@ -49,7 +54,7 @@ class TapSnowflake(SQLTap):
             description=(
                 "Path to where the private key is stored. The private key is used "
                 "to connect to snowflake. One of [`password`, `private_key`, "
-                "`private_key_path`] is required."
+                "`private_key_path`, `access_token`, `refresh_token`] is required."
             ),
         ),
         th.Property(
@@ -67,6 +72,66 @@ class TapSnowflake(SQLTap):
             description=(
                 "If authentication should be done using SSO (via external browser). "
                 "See SSO browser authentication."
+            ),
+        ),
+        th.Property(
+            "access_token",
+            th.StringType,
+            required=False,
+            secret=True,
+            description=(
+                "Pre-minted OAuth 2.0 access token. Use when your orchestrator "
+                "(Meltano Cloud, Airflow, etc.) manages the token lifecycle. "
+                "Mutually exclusive with `refresh_token`."
+            ),
+        ),
+        th.Property(
+            "refresh_token",
+            th.StringType,
+            required=False,
+            secret=True,
+            description=(
+                "Long-lived OAuth 2.0 refresh token. The tap mints short-lived "
+                "access tokens by POSTing to `oauth_token_endpoint`. Requires "
+                "`client_id` and `client_secret`."
+            ),
+        ),
+        th.Property(
+            "client_id",
+            th.StringType,
+            required=False,
+            secret=True,
+            description=(
+                "OAuth 2.0 client identifier. Required when `refresh_token` is set."
+            ),
+        ),
+        th.Property(
+            "client_secret",
+            th.StringType,
+            required=False,
+            secret=True,
+            description=(
+                "OAuth 2.0 client secret. Required when `refresh_token` is set."
+            ),
+        ),
+        th.Property(
+            "oauth_token_endpoint",
+            th.StringType,
+            required=False,
+            description=(
+                "OAuth 2.0 token endpoint URL. Defaults to "
+                "`https://{account}.snowflakecomputing.com/oauth/token-request` "
+                "for Snowflake-internal OAuth. Override for External OAuth "
+                "(Okta, Azure AD, etc.)."
+            ),
+        ),
+        th.Property(
+            "oauth_scope",
+            th.StringType,
+            required=False,
+            description=(
+                "Optional `scope` parameter included in OAuth refresh requests. "
+                "Omit unless your identity provider requires it."
             ),
         ),
         th.Property(
