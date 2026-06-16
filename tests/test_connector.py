@@ -253,3 +253,91 @@ def test_user_required_for_browser_auth() -> None:
     conn = make_connector(use_browser_authentication=True)
     with pytest.raises(ConfigValidationError, match="user"):
         _ = conn.auth_method
+
+
+# --- USE DATABASE connect-listener ----------------------------------------
+
+
+def _capture_use_database_listener(conn: SnowflakeConnector) -> dict:
+    """Run create_engine with the connect-event registration stubbed, capturing
+    the listener function so it can be invoked against a fake DBAPI connection."""
+    captured: dict = {}
+
+    def fake_listens_for(target: Any, identifier: str):  # noqa: ANN202
+        def deco(fn):  # noqa: ANN001, ANN202
+            captured["identifier"] = identifier
+            captured["fn"] = fn
+            return fn
+
+        return deco
+
+    with patch(
+        "tap_snowflake.client.sqlalchemy.event.listens_for",
+        side_effect=fake_listens_for,
+    ):
+        conn.create_engine()
+    return captured
+
+
+def test_create_engine_registers_use_database_listener(
+    mock_create_engine: MagicMock,
+) -> None:
+    """With a database configured, a connect-listener issues an explicit
+    `USE DATABASE` so every pooled connection has a current database (role-scoped
+    OAuth tokens carry no default namespace, so the connect-time database alone
+    is unreliable)."""
+    conn = make_connector(access_token="at-STATIC", database="CUSTOMER_DB")
+    captured = _capture_use_database_listener(conn)
+
+    assert captured["identifier"] == "connect"
+
+    cursor = MagicMock()
+    dbapi_connection = MagicMock()
+    dbapi_connection.cursor.return_value = cursor
+
+    captured["fn"](dbapi_connection, MagicMock())
+
+    cursor.execute.assert_called_once_with('USE DATABASE "CUSTOMER_DB"')
+    cursor.close.assert_called_once()
+
+
+def test_use_database_listener_quotes_special_chars(
+    mock_create_engine: MagicMock,
+) -> None:
+    """A database name containing special characters (e.g. a `$`) is quoted so
+    the USE DATABASE resolves it exactly."""
+    conn = make_connector(access_token="at-STATIC", database="TEST$DB")
+    captured = _capture_use_database_listener(conn)
+
+    cursor = MagicMock()
+    dbapi_connection = MagicMock()
+    dbapi_connection.cursor.return_value = cursor
+
+    captured["fn"](dbapi_connection, MagicMock())
+
+    cursor.execute.assert_called_once_with('USE DATABASE "TEST$DB"')
+
+
+def test_no_use_database_listener_without_database(
+    mock_create_engine: MagicMock,
+) -> None:
+    """`database` is optional (e.g. browser-auth discovery). When it's absent,
+    no connect-listener is registered at all."""
+    registrations = {"count": 0}
+
+    def fake_listens_for(target: Any, identifier: str):  # noqa: ANN202
+        registrations["count"] += 1
+
+        def deco(fn):  # noqa: ANN001, ANN202
+            return fn
+
+        return deco
+
+    conn = make_connector(access_token="at-STATIC")  # no database
+    with patch(
+        "tap_snowflake.client.sqlalchemy.event.listens_for",
+        side_effect=fake_listens_for,
+    ):
+        conn.create_engine()
+
+    assert registrations["count"] == 0

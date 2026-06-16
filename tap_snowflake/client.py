@@ -25,6 +25,8 @@ from singer_sdk.sql import SQLConnector, SQLStream
 from singer_sdk.sql.connector import SQLToJSONSchema
 from singer_sdk.streams.core import REPLICATION_FULL_TABLE, REPLICATION_INCREMENTAL
 from snowflake.sqlalchemy import URL
+from snowflake.sqlalchemy.base import SnowflakeIdentifierPreparer
+from snowflake.sqlalchemy.snowdialect import SnowflakeDialect
 from sqlalchemy.sql import text
 
 from tap_snowflake.oauth import (
@@ -267,6 +269,31 @@ class SnowflakeConnector(SQLConnector):
             pool_timeout=10,
             connect_args=connect_args,
         )
+
+        # Force the session's current database on every pooled connection.
+        #
+        # The connect-time `database` is only a soft request: Snowflake sets the
+        # current database from it only if the active role can resolve it. With a
+        # role-scoped OAuth token (scope `session:role:<role>`) that has no default
+        # namespace, that request can be silently dropped — the session then has no
+        # current database, and unqualified `schema.table` references (which this
+        # tap emits, relying on the session database) fail with
+        # `090105: ... does not have a current database`. Issuing an explicit
+        # `USE DATABASE` after the role is established makes the context
+        # deterministic. Only when a database is configured (it is optional, e.g.
+        # for browser-auth discovery).
+        database = self.config.get("database")
+        if database:
+            preparer = SnowflakeIdentifierPreparer(SnowflakeDialect())
+            quoted_database = preparer.quote(database)
+
+            @sqlalchemy.event.listens_for(engine, "connect")
+            def _use_database(dbapi_connection, connection_record) -> None:  # noqa: ANN001, ARG001
+                cursor = dbapi_connection.cursor()
+                try:
+                    cursor.execute(f"USE DATABASE {quoted_database}")
+                finally:
+                    cursor.close()
 
         if self.auth_method == SnowflakeAuthMethod.BROWSER:
             # Patch the connect method to redirect stdout during browser auth
